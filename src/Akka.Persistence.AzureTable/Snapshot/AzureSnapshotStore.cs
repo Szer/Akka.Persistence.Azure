@@ -7,11 +7,13 @@
 
 using System;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Akka.Persistence.Snapshot;
 using Microsoft.WindowsAzure.Storage;
 using Microsoft.WindowsAzure.Storage.Table;
 using Newtonsoft.Json;
+using Akka.Persistence.AzureTable.Journal;
 
 namespace Akka.Persistence.AzureTable.Snapshot
 {
@@ -34,7 +36,10 @@ namespace Akka.Persistence.AzureTable.Snapshot
 
                 if (_settings.AutoInitialize)
                 {
-                    tableClient.GetTableReference(_settings.TableName).CreateIfNotExists();
+                    tableClient.GetTableReference(_settings.TableName)
+                        .CreateIfNotExistsAsync()
+                        .GetAwaiter()
+                        .GetResult();
                 }
 
                 return tableClient;
@@ -51,41 +56,44 @@ namespace Akka.Persistence.AzureTable.Snapshot
             var table = _client.Value.GetTableReference(_settings.TableName);
 
             var query = BuildSnapshotTableQuery(persistenceId, criteria);
-
-            return table.ExecuteQuery(query).OrderByDescending(t => t.RowKey).Select(ToSelectedSnapshot).FirstOrDefault();
+            return (await table.ExecuteAsync(query, CancellationToken.None)).OrderByDescending(t => t.RowKey)
+                .Select(ToSelectedSnapshot).FirstOrDefault();
         }
 
         /// <summary>
         /// Asynchronously saves a snapshot.
         /// This call is protected with a circuit-breaker
         /// </summary>
-        protected override Task SaveAsync(SnapshotMetadata metadata, object snapshot)
+        protected override async Task SaveAsync(SnapshotMetadata metadata, object snapshot)
         {
             var table = _client.Value.GetTableReference(_settings.TableName);
 
             TableOperation upsertOperation = TableOperation.Insert(ToSnapshotEntry(metadata, snapshot));
 
-            var entity = (SnapshotEntry)table.Execute(TableOperation.Retrieve<SnapshotEntry>(metadata.PersistenceId, SnapshotEntry.ToRowKey(metadata.SequenceNr))).Result;
+            var entity = (SnapshotEntry) (await table.ExecuteAsync(
+                TableOperation.Retrieve<SnapshotEntry>(metadata.PersistenceId,
+                    SnapshotEntry.ToRowKey(metadata.SequenceNr)))).Result;
             if (entity != null)
             {
                 entity.Payload = JsonConvert.SerializeObject(snapshot);
                 upsertOperation = TableOperation.Replace(entity);
             }
 
-            return table.ExecuteAsync(upsertOperation);
+            await table.ExecuteAsync(upsertOperation);
         }
 
         /// <summary>
         /// Deletes the snapshot identified by <paramref name="metadata" />.
         /// This call is protected with a circuit-breaker
         /// </summary>
-        protected override Task DeleteAsync(SnapshotMetadata metadata)
+        protected override async Task DeleteAsync(SnapshotMetadata metadata)
         {
             var table = _client.Value.GetTableReference(_settings.TableName);
-            TableOperation getOperation = TableOperation.Retrieve<SnapshotEntry>(metadata.PersistenceId, SnapshotEntry.ToRowKey(metadata.SequenceNr));
-            TableResult result = table.Execute(getOperation);
-            TableOperation deleteOperation = TableOperation.Delete((SnapshotEntry)result.Result);
-            return table.ExecuteAsync(deleteOperation);
+            TableOperation getOperation = TableOperation.Retrieve<SnapshotEntry>(metadata.PersistenceId,
+                SnapshotEntry.ToRowKey(metadata.SequenceNr));
+            TableResult result = await table.ExecuteAsync(getOperation);
+            TableOperation deleteOperation = TableOperation.Delete((SnapshotEntry) result.Result);
+            await table.ExecuteAsync(deleteOperation);
         }
 
         /// <summary>
@@ -98,7 +106,7 @@ namespace Akka.Persistence.AzureTable.Snapshot
             var table = _client.Value.GetTableReference(_settings.TableName);
             TableQuery<SnapshotEntry> query = BuildSnapshotTableQuery(persistenceId, criteria);
 
-            var results = table.ExecuteQuery(query).OrderByDescending(t => t.RowKey).ToList();
+            var results = (await table.ExecuteAsync(query, CancellationToken.None)).OrderByDescending(t => t.RowKey).ToList();
             if (results.Count > 0)
             {
                 TableBatchOperation batchOperation = new TableBatchOperation();
@@ -106,7 +114,7 @@ namespace Akka.Persistence.AzureTable.Snapshot
                 {
                     batchOperation.Delete(s);
                 }
-                table.ExecuteBatch(batchOperation);
+                await table.ExecuteBatchAsync(batchOperation);
             }
         }
 

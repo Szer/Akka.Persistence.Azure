@@ -14,7 +14,7 @@ namespace Akka.Persistence.AzureTable
     {
         public static string TypeQualifiedNameForManifest(this Type type)
         {
-            return type == null ? string.Empty : $"{type.FullName}, {type.Assembly.GetName().Name}";
+            return type == null ? string.Empty : type.AssemblyQualifiedName;
         }
     }
 }

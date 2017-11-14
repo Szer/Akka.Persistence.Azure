@@ -9,6 +9,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Akka.Actor;
 using Akka.Persistence.Journal;
@@ -38,8 +39,14 @@ namespace Akka.Persistence.AzureTable.Journal
 
                 if (_settings.AutoInitialize)
                 {
-                    tableClient.GetTableReference(_settings.TableName).CreateIfNotExists();
-                    tableClient.GetTableReference(_settings.MetadataTableName).CreateIfNotExists();
+                    tableClient.GetTableReference(_settings.TableName)
+                        .CreateAsync()
+                        .GetAwaiter()
+                        .GetResult();
+                    tableClient.GetTableReference(_settings.MetadataTableName)
+                        .CreateAsync()
+                        .GetAwaiter()
+                        .GetResult();
                 }
 
                 return tableClient;
@@ -109,10 +116,11 @@ namespace Akka.Persistence.AzureTable.Journal
         /// <param name="persistenceId">Persistent actor identifier</param>
         protected override async Task DeleteMessagesToAsync(string persistenceId, long toSequenceNr)
         {
+            var table = _client.Value.GetTableReference(_settings.TableName);
             // TODO: optimize the query
-            IEnumerable<JournalEntry> results = _client.Value.GetTableReference(_settings.TableName)
-                    .ExecuteQuery(BuildDeleteTableQuery(persistenceId, toSequenceNr))
-                    .OrderByDescending(t => t.RowKey);
+            IEnumerable<JournalEntry> results = (await table
+                    .ExecuteAsync(BuildDeleteTableQuery(persistenceId, toSequenceNr), CancellationToken.None))
+                .OrderByDescending(t => t.RowKey);
 
             if (results.Any())
             {
